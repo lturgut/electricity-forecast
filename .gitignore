@@ -1,0 +1,11 @@
+# Jupyter
+.ipynb_checkpoints/
+*.pyc
+__pycache__/
+
+# Cached data (fetched from APIs, not committed)
+data/*.csv
+
+# OS
+.DS_Store
+Thumbs.db
