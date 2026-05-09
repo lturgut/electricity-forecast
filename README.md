@@ -82,3 +82,7 @@ yfinance
 ## Metric
 
 Pinball loss at q=0.025, q=0.45, and q=0.975 for each zone.
+
+## Report
+
+A short methods write-up with the full mathematical formulation and a backtest table is in [`report/report.pdf`](report/report.pdf) (source: `report/report.tex`).

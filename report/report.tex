@@ -1,0 +1,351 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\hypersetup{colorlinks=true,linkcolor=black,urlcolor=blue!60!black}
+
+\title{Probabilistic Day-Ahead Electricity Price Forecasting\\
+       for Germany--Luxembourg and Spain}
+\author{[Author names]\\ ETH Z\"urich Industry Hackathon}
+\date{May 2026}
+
+\newcommand{\DELU}{\textsf{DE-LU}}
+\newcommand{\ES}{\textsf{ES}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+We forecast hourly day-ahead electricity prices for the German--Luxembourg
+(\DELU) and Spanish (\ES) bidding zones with calibrated probabilistic
+intervals. The pipeline combines a gradient-boosted quantile regression
+(short-term, $\le 14$ days) with an STL-based seasonal extrapolation
+(long-term, $> 14$ days), trained on price, generation, weather, and fuel
+data from 2024-01-01 onwards. Held-out backtesting on Sunday
+2026-05-10 yields a pinball loss at $q=0.45$ of $12.59$ for \DELU\
+and $14.86$ for \ES, with $95\%$ prediction-interval coverage of
+$90.9\%$ and $63.6\%$ respectively. We discuss the systematic ES
+overnight bias on Sundays and outline targeted recalibration.
+\end{abstract}
+
+\section{Problem statement}
+\label{sec:problem}
+
+Let $p_t^z \in \mathbb{R}$ denote the day-ahead auction clearing price
+(EUR/MWh) for hour $t$ in zone $z \in \{\DELU, \ES\}$. Given information
+$\mathcal{F}_{t_0}$ available at decision time $t_0$, we produce, for
+each hour $t \in [t_0+1\,\mathrm{d},\ t_0+2\,\mathrm{d}]$ in the
+evaluation window, three quantile forecasts
+$\hat{q}_{0.025}^z(t),\ \hat{q}_{0.45}^z(t),\ \hat{q}_{0.975}^z(t)$.
+
+Forecast quality is scored by the pinball loss
+\begin{equation}
+  \rho_q(y,\hat{q})
+  \;=\; \max\bigl\{q\,(y - \hat{q}),\; (q-1)(y - \hat{q})\bigr\},
+  \qquad q \in (0,1),
+  \label{eq:pinball}
+\end{equation}
+evaluated at $q = 0.45$. The slight asymmetry $q < 0.5$ penalises
+\emph{over}-prediction more heavily than under-prediction, consistent
+with a price-taker procuring electricity at the auction.
+
+\section{Data}
+\label{sec:data}
+
+All inputs are public, hourly, and aligned to UTC.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+Source & Variables & Range & Notes \\ \midrule
+Energy-Charts (Fraunhofer ISE) &
+  $p_t^z$, generation per technology & 2024-01 -- live & DE-LU and ES \\
+Open-Meteo Archive &
+  $T_t$, $v_t$, $I_t$ & 2024-01 -- today & temp, wind, irradiance \\
+Open-Meteo Forecast &
+  $T_t$, $v_t$, $I_t$ & next $16$ days & ECMWF + DWD blend \\
+Yahoo Finance &
+  NG=F, KRBN ETF & daily, ffilled & gas / CO$_2$ proxies \\ \bottomrule
+\end{tabular}
+\caption{Data sources. Generation totals are decomposed into
+$W_t$ (wind), $S_t$ (solar PV), $L_t$ (load), $G_t$ (fossil gas).}
+\end{table}
+
+Prices are clipped to $[-500, 3000]$ EUR/MWh and a 1-hour grid is
+imposed by linear resampling. Up to three consecutive missing values
+are forward-filled; longer gaps are imputed by column median.
+
+\section{Feature engineering}
+\label{sec:features}
+
+For each zone and hour we construct $43$ features. With
+$h(t),\ d(t),\ m(t)$ denoting hour-of-day, day-of-week, and month, all
+periodic encodings use the standard sine/cosine pair
+\begin{equation}
+  \phi_P(t) = \bigl(\sin(2\pi\,k(t)/P),\ \cos(2\pi\,k(t)/P)\bigr),
+\end{equation}
+for periods $P \in \{24, 7, 12\}$.
+
+\paragraph{Price autoregression.}
+Lags of the target,
+$\bigl\{\,p_{t-\tau}^z : \tau \in \{24, 48, 72, 120, 168\}\,\bigr\}$,
+plus a one-week momentum $p_{t-24}^z - p_{t-168}^z$ and rolling
+statistics over windows $W \in \{24, 48, 72, 168\}$,
+\begin{equation}
+  \mu_W(t) = \tfrac{1}{W}\!\!\sum_{i=1}^{W} p_{t-i}^z,
+  \qquad
+  \sigma_W(t) = \sqrt{\tfrac{1}{W-1}\!\!\sum_{i=1}^{W}(p_{t-i}^z - \mu_W(t))^2},
+\end{equation}
+together with $\min$ and the empirical $0.1$-quantile over $W=24,48$ to
+capture price-floor behaviour.
+
+\paragraph{Cross-zone leakage.}
+DE-LU and ES are weakly coupled through their common weather macro-pattern
+and via cross-border interconnectors (FR transit). We include
+$p_{t-24}^{\bar{z}},\ p_{t-48}^{\bar{z}}$ where $\bar{z}$ is the partner
+zone, which contributes $\sim$$3\%$ of LightGBM gain on \DELU.
+
+\paragraph{Exogenous.}
+Weather $(T_t, v_t, I_t)$, generation $(W_t, S_t, L_t, G_t)$, and
+\begin{equation}
+  \sigma_t \;=\; \frac{S_t}{\max(L_t,\ 1)},
+  \qquad
+  \Delta I_t \;=\; I_t - I_{t-1},
+\end{equation}
+the \emph{solar surplus ratio} and irradiance change. Fuel proxies
+enter as 1- and 7-day-lagged daily-resampled values; binary holiday
+flags for DE and ES come from the \texttt{holidays} package.
+
+\section{Short-term model ($\le 14$ days)}
+\label{sec:short}
+
+For each zone $z$ and quantile $q \in \{0.025, 0.45, 0.975\}$ we fit a
+gradient-boosted regressor $f_{\theta}^{z,q}: \mathbb{R}^{43} \to \mathbb{R}$
+minimising the empirical pinball loss
+\begin{equation}
+  \mathcal{L}_q(\theta) \;=\;
+  \sum_{t} w_t \,\rho_q\!\bigl(p_t^z,\ f_{\theta}^{z,q}(x_t)\bigr).
+  \label{eq:loss}
+\end{equation}
+We use LightGBM with \texttt{objective='quantile'}, $\texttt{alpha}=q$,
+$800$ trees (early-stopped), \texttt{learning\_rate} $=0.04$,
+\texttt{num\_leaves} $=63$, $L_1=0.1$, $L_2=0.5$, and column/row
+subsampling at $0.8$.
+
+\subsection{Time-decayed sample weights}
+
+Recent regimes are more informative than the 2022 gas crisis, so
+samples are exponentially down-weighted with half-life
+$H = 180$~days:
+\begin{equation}
+  w_t \;=\; \frac{\tilde{w}_t}{\bar{\tilde{w}}}, \qquad
+  \tilde{w}_t \;=\; \exp\!\left(-\tfrac{\ln 2}{H}\,\Delta_t\right), \qquad
+  \Delta_t \;=\; \frac{t_{\max} - t}{86400 \, \mathrm{s}}.
+\end{equation}
+Six-month-old samples thus enter at half the leverage of today's;
+two-year-old samples at $\sim$$8\%$.
+
+\subsection{Validation and ensembling}
+
+The last $8 \times 168 = 1344$ hours are held out for early stopping
+with patience $60$. The selected number of rounds $K^\star$ is then
+\emph{re-fit on the full training set}; this exploits the additional
+$8$ weeks of recent data without re-tuning. We repeat the procedure
+for $M = 5$ random seeds and average:
+\begin{equation}
+  \hat{q}^{\,z,q}_{\mathrm{ST}}(t)
+  \;=\; \frac{1}{M}\sum_{m=1}^{M} f_{\theta_m}^{z,q}(x_t).
+  \label{eq:ensemble}
+\end{equation}
+Total: $2 \text{ zones} \times 3 \text{ quantiles} \times 5 \text{ seeds} = 30$
+LightGBM models per run.
+
+\subsection{Constructing exogenous features for the eval window}
+
+Lag features at $t$ in the eval window simply read from history.
+Generation features $(W_t, S_t, L_t, G_t)$ must be \emph{forecast}.
+We use a month$\times$hour climatological mean
+$\bar{X}_{m,h} = \mathbb{E}[X_t \mid m(t)=m,\ h(t)=h]$ as a baseline,
+and rescale wind/solar by the realized weather-forecast ratio
+\begin{equation}
+  \hat{S}_t \;=\; \bar{S}_{m(t),h(t)} \cdot
+  \mathrm{clip}\!\left(\frac{I_t}{\bar{I}_{m(t),h(t)}},\ 0,\ 3\right),
+  \qquad
+  \hat{W}_t \;=\; \bar{W}_{m(t),h(t)} \cdot
+  \mathrm{clip}\!\left(\frac{v_t}{\bar{v}_{m(t),h(t)}},\ 0,\ 3\right),
+\end{equation}
+preserving variance from the meteorological forecast while anchoring
+levels to seasonal climatology. Renewable share is then recomputed
+from the adjusted $\hat{S} + \hat{W}$ over the (climatological) load.
+
+\section{Long-term model ($> 14$ days)}
+\label{sec:long}
+
+Beyond two weeks the lag-driven short-term model has no signal:
+$p_{t-168}$ becomes irrelevant. We use seasonal-trend decomposition
+(STL, robust, weekly period $P = 168$):
+\begin{equation}
+  p_t^z \;=\; T_t + S_t + R_t,
+\end{equation}
+fitted on the full training history per zone.
+
+\paragraph{Trend extrapolation.}
+The trend is linearly extrapolated from the last $4$ weeks
+($N = 28 \times 24 = 672$ hours):
+\begin{equation}
+  \hat{T}_{t_0+h} \;=\; T_{t_0} + \alpha\, h,
+  \qquad
+  \alpha \;=\; \arg\min_{\beta}
+  \sum_{i=t_0-N+1}^{t_0} \bigl(T_i - (a + \beta \, i)\bigr)^2.
+\end{equation}
+
+\paragraph{Seasonal anchor.}
+We collapse the STL seasonal to a month$\times$hour climatology
+$\bar{S}_{m,h}$ and read off
+$\hat{S}_{t} = \bar{S}_{m(t),\,h(t)}$.
+
+\paragraph{Probabilistic intervals.}
+Empirical $2.5\%$ and $97.5\%$ residual quantiles $r_{0.025}, r_{0.975}$
+are widened with horizon (in days, $h_d$):
+\begin{equation}
+  \hat{q}^{\,z,p}_{\mathrm{LT}}(t)
+  \;=\; \hat{T}_{t} + \hat{S}_t \;+\; r_p \cdot
+  \sqrt{\max(h_d/14,\ 1)},
+  \qquad p \in \{0.025, 0.975\},
+\end{equation}
+with $\hat{q}_{0.45}^{\mathrm{LT}}(t) = \hat{T}_t + \hat{S}_t$. The
+$\sqrt{\cdot}$ scaling is the diffusive widening expected from a random-walk
+residual.
+
+\section{Composition and post-processing}
+
+\subsection{Regime switching}
+
+Let $h_d(t)$ denote the lead time in days from $t_0$. The combined
+forecast is
+\begin{equation}
+  \hat{q}^{\,z,p}(t) \;=\;
+  \begin{cases}
+    \hat{q}^{\,z,p}_{\mathrm{ST}}(t) & \text{if } h_d(t) \le 14, \\
+    \hat{q}^{\,z,p}_{\mathrm{LT}}(t) & \text{if } h_d(t) > 14.
+  \end{cases}
+\end{equation}
+For the May~11 evaluation window all hours fall in the short-term
+regime; the long-term branch covers extended-horizon submissions.
+
+\subsection{Solar-driven interval widening}
+
+Backtest analysis showed the LightGBM model under-estimates uncertainty
+in high-irradiance midday hours, when negative-price events caused by
+photovoltaic surplus dominate. We multiply the half-widths by
+\begin{equation}
+  \phi(I_t) \;=\;
+  \min\!\left(1 + \frac{\max(I_t - 150,\ 0)}{400},\ 2.0\right),
+\end{equation}
+a piecewise-linear ramp from $1$ at $I = 150~\mathrm{W/m^2}$
+to a cap of $2$ at $\sim 550~\mathrm{W/m^2}$, applied as
+\begin{align}
+  \hat{q}^{\,z,0.025\,\prime}(t)
+    &= \hat{q}^{\,z,0.45}(t) - \phi(I_t)\bigl(\hat{q}^{\,z,0.45}(t) - \hat{q}^{\,z,0.025}(t)\bigr), \\
+  \hat{q}^{\,z,0.975\,\prime}(t)
+    &= \hat{q}^{\,z,0.45}(t) + \phi(I_t)\bigl(\hat{q}^{\,z,0.975}(t) - \hat{q}^{\,z,0.45}(t)\bigr).
+\end{align}
+
+\subsection{Quantile sorting}
+
+Independent fitting per quantile can produce crossings
+$\hat{q}_{0.025} > \hat{q}_{0.45}$. We enforce monotonicity by sorting
+the triplet:
+\begin{equation}
+  (\hat{q}_{0.025}',\ \hat{q}_{0.45}',\ \hat{q}_{0.975}')
+  \;:=\; \mathrm{sort}(\hat{q}_{0.025},\ \hat{q}_{0.45},\ \hat{q}_{0.975}).
+\end{equation}
+
+\section{Backtest}
+\label{sec:backtest}
+
+We re-train end-to-end on data through 2026-05-09 and predict the
+next $24$ hours (Sunday 2026-05-10), comparing against the realised
+day-ahead auction. Of $24$ target hours, $22$ have available actuals.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Metric & \DELU & \ES \\ \midrule
+Pinball loss $q=0.45$            & $12.59$ & $14.86$ \\
+Mean absolute error (EUR/MWh)    & $23.36$ & $27.02$ \\
+Root-mean-square error (EUR/MWh) & $30.27$ & $32.47$ \\
+Bias $(\hat{p}_{0.45} - p)$ (EUR/MWh) & $+18.25$ & $+27.02$ \\
+$95\%$ PI coverage                & $90.9\%$ & $63.6\%$ \\ \midrule
+Validation pinball $q=0.45$ (last 8 wk)  & $9.98$ & $4.84$ \\
+Test/validation gap              & $\times 1.26$ & $\times 3.07$ \\
+\bottomrule
+\end{tabular}
+\caption{Backtest on 2026-05-10 ($22/24$ h available). Validation
+pinball is on the last 8 weeks of the training window prior to
+re-fitting on the full set.}
+\label{tab:backtest}
+\end{table}
+
+\paragraph{Discussion.}
+\DELU\ generalises cleanly: the validation-to-test pinball gap is a
+modest $\times 1.26$, and PI coverage of $90.9\%$ is within reach of
+the nominal $95\%$ given a small held-out sample. The intervals
+correctly contain negative midday prices triggered by PV surplus.
+
+\ES\ exhibits a systematic overnight failure on this Sunday: hourly
+predictions of $54$--$73$ EUR/MWh against realised values of
+$14$--$20$ EUR/MWh from 02:00--08:00 CEST. The
+$+27$ EUR/MWh bias and $63.6\%$ coverage on Spain are driven
+almost entirely by these overnight hours. Inspection shows two
+contributing factors:
+\begin{enumerate}
+  \item \textbf{Lag-feature dominance.} The 24-h price lag references
+        Saturday's overnight ES prices, which were structurally higher;
+        the model up-weights this signal over the (weaker) day-of-week
+        cyclical encoding.
+  \item \textbf{Solar-only widening.} The post-processing in
+        Eq.~(11) widens intervals only where $I_t > 150$, which is
+        zero overnight. The model thus reports tight bands around a
+        biased centre.
+\end{enumerate}
+
+\section{Limitations and future work}
+
+\paragraph{Day-of-week recalibration.}
+The pinball asymmetry interacts poorly with weekend/holiday regime
+shifts. A targeted recalibration --- e.g.\ a Sunday-specific bias
+correction
+$\hat{q}^{\prime}_{p}(t) = \hat{q}_p(t) - b^{z}_{\text{Sun}}$ where
+$b^{z}_{\text{Sun}}$ is the median test residual on prior Sundays ---
+would directly attack the observed ES failure mode.
+
+\paragraph{Coverage-driven widening.}
+Replacing the manual solar widening with an isotonic/conformal
+recalibration on a holdout set would yield empirically valid
+$95\%$ intervals across all regimes, not just sunny ones.
+
+\paragraph{Joint zone modelling.}
+Treating $(\,p^{\DELU}_t,\ p^{\ES}_t\,)$ as a bivariate target with a
+shared latent renewables process should improve both bias and
+interval calibration during European-wide weather events. A
+multi-output LightGBM with chained quantile heads is a low-effort
+upgrade.
+
+\paragraph{Reproducibility.}
+All data is fetched from public APIs and cached locally; the run is
+seed-deterministic given fixed cache contents. End-to-end pipeline:
+$\sim$~4~min on a 2024 MacBook (data cached) for the full $30$-model
+ensemble.
+
+\end{document}

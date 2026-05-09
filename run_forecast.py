@@ -85,9 +85,13 @@ def om_weather(lat, lon, start, end, cache_path, forecast=False):
         params = {'latitude': lat, 'longitude': lon, 'hourly': variables,
                   'timezone': 'UTC', 'forecast_days': 16}
     else:
+        # Open-Meteo archive cuts off at "today"; clip to avoid 400.
+        # Forecast API call (forecast=True) covers any future window.
+        archive_max = pd.Timestamp.utcnow().strftime('%Y-%m-%d')
+        end_clipped = min(end, archive_max)
         url    = 'https://archive-api.open-meteo.com/v1/archive'
         params = {'latitude': lat, 'longitude': lon, 'start_date': start,
-                  'end_date': end, 'hourly': variables, 'timezone': 'UTC'}
+                  'end_date': end_clipped, 'hourly': variables, 'timezone': 'UTC'}
     r = requests.get(url, params=params, timeout=120)
     r.raise_for_status()
     d = r.json()['hourly']

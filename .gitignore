@@ -1,10 +1,25 @@
-# Jupyter
-.ipynb_checkpoints/
+# Python
+.venv/
+venv/
 *.pyc
 __pycache__/
+*.egg-info/
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
 
 # Cached data (fetched from APIs, not committed)
 data/*.csv
+
+# LaTeX build artifacts
+report/*.aux
+report/*.log
+report/*.out
+report/*.fls
+report/*.fdb_latexmk
+report/*.toc
+report/*.synctex.gz
 
 # OS
 .DS_Store
