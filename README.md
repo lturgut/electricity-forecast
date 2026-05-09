@@ -1,10 +1,10 @@
-# Electricity Price Forecast
+# Electricity Price Forecast — Team Higher Power
 
-Day-ahead electricity price forecasting for **DE-LU** (Germany-Luxembourg) and **ES** (Spain) using LightGBM quantile regression.
+Day-ahead electricity price forecasting for **DE-LU** (Germany-Luxembourg) and **ES** (Spain) using LightGBM quantile regression. Submission for the ETH Zürich Frigg Hackathon.
 
 ## Evaluation window
 
-May 11, 2026 — 24 hourly slots (00:00–23:00 UTC), submitted as CEST timestamps in `predictions.csv`.
+May 11, 2026 — 24 hourly slots (02:00–2026-05-12 01:00 CEST), submitted as CEST timestamps in `higher_power_predictions.csv`.
 
 ## Model
 
@@ -31,6 +31,24 @@ May 11, 2026 — 24 hourly slots (00:00–23:00 UTC), submitted as CEST timestam
 
 For high-solar hours (solar radiation > 150 W/m²), prediction intervals are expanded proportionally to capture the increased uncertainty from solar surplus price crashes.
 
+## Files
+
+| File | Purpose |
+|------|---------|
+| `higher_power_model.ipynb` | Self-contained notebook — loads data, trains ensemble, generates predictions |
+| `higher_power_predictions.csv` | Submission file (24 rows, CEST timestamps, 7 columns) |
+| `higher_power_data.zip` | All input CSVs with README.txt describing each source |
+| `report/report.tex` | Methods write-up (LaTeX source) |
+| `report/report.pdf` | Methods write-up (compiled PDF) |
+| `data/` | Cached CSVs for prices, generation, weather, gas, CO2 |
+
+## Usage
+
+Open and run all cells in `higher_power_model.ipynb`. The notebook is self-contained:
+- Downloads and caches all data on first run (skips if CSVs already present in `data/`)
+- Trains the 30-model ensemble (2 zones × 3 quantiles × 5 seeds)
+- Writes `higher_power_predictions.csv`
+
 ## Data sources
 
 | Data | Source |
@@ -42,41 +60,10 @@ For high-solar hours (solar radiation > 150 W/m²), prediction intervals are exp
 | Gas prices | Henry Hub (NG=F) via yfinance |
 | CO2 prices | KRBN ETF via yfinance |
 
-All data is cached locally in `data/` on first run.
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `run_forecast.py` | Main pipeline — fetches data, trains ensemble, writes `predictions.csv` |
-| `backtest_may10.py` | Backtest on May 10 using data through May 9 — measures model quality |
-| `evaluate.py` | Evaluates `predictions.csv` against actual prices from Energy-Charts API |
-| `predictions.csv` | Submission file (24 rows, CEST timestamps) |
-| `data/` | Cached CSVs for prices, generation, weather, gas, CO2 |
-
-## Usage
-
-```bash
-# Generate predictions
-python run_forecast.py
-
-# Backtest on May 10
-python backtest_may10.py
-
-# Evaluate submitted predictions
-python evaluate.py
-```
-
 ## Requirements
 
 ```
-lightgbm
-pandas
-numpy
-requests
-statsmodels
-holidays
-yfinance
+%pip install -q lightgbm statsmodels pandas numpy requests holidays yfinance
 ```
 
 ## Metric
@@ -85,4 +72,4 @@ Pinball loss at q=0.025, q=0.45, and q=0.975 for each zone.
 
 ## Report
 
-A short methods write-up with the full mathematical formulation and a backtest table is in [`report/report.pdf`](report/report.pdf) (source: `report/report.tex`).
+Methods write-up with full mathematical formulation: [`report/report.pdf`](report/report.pdf)
