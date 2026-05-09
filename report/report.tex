@@ -11,7 +11,7 @@
 
 \title{Probabilistic Day-Ahead Electricity Price Forecasting\\
        for Germany--Luxembourg and Spain}
-\author{[Author names]\\ ETH Z\"urich Industry Hackathon}
+\author{Team: Higher Power\\ ETH Z\"urich Industry Hackathon}
 \date{May 2026}
 
 \newcommand{\DELU}{\textsf{DE-LU}}
@@ -27,11 +27,8 @@ We forecast hourly day-ahead electricity prices for the German--Luxembourg
 intervals. The pipeline combines a gradient-boosted quantile regression
 (short-term, $\le 14$ days) with an STL-based seasonal extrapolation
 (long-term, $> 14$ days), trained on price, generation, weather, and fuel
-data from 2024-01-01 onwards. Held-out backtesting on Sunday
-2026-05-10 yields a pinball loss at $q=0.45$ of $12.59$ for \DELU\
-and $14.86$ for \ES, with $95\%$ prediction-interval coverage of
-$90.9\%$ and $63.6\%$ respectively. We discuss the systematic ES
-overnight bias on Sundays and outline targeted recalibration.
+data from 2024-01-01 onwards. Forecasts are scored by pinball loss at
+$q \in \{0.025, 0.45, 0.975\}$ for each zone.
 \end{abstract}
 
 \section{Problem statement}
@@ -269,66 +266,15 @@ the triplet:
   \;:=\; \mathrm{sort}(\hat{q}_{0.025},\ \hat{q}_{0.45},\ \hat{q}_{0.975}).
 \end{equation}
 
-\section{Backtest}
-\label{sec:backtest}
-
-We re-train end-to-end on data through 2026-05-09 and predict the
-next $24$ hours (Sunday 2026-05-10), comparing against the realised
-day-ahead auction. Of $24$ target hours, $22$ have available actuals.
-
-\begin{table}[h]
-\centering
-\small
-\begin{tabular}{@{}lcc@{}}
-\toprule
-Metric & \DELU & \ES \\ \midrule
-Pinball loss $q=0.45$            & $12.59$ & $14.86$ \\
-Mean absolute error (EUR/MWh)    & $23.36$ & $27.02$ \\
-Root-mean-square error (EUR/MWh) & $30.27$ & $32.47$ \\
-Bias $(\hat{p}_{0.45} - p)$ (EUR/MWh) & $+18.25$ & $+27.02$ \\
-$95\%$ PI coverage                & $90.9\%$ & $63.6\%$ \\ \midrule
-Validation pinball $q=0.45$ (last 8 wk)  & $9.98$ & $4.84$ \\
-Test/validation gap              & $\times 1.26$ & $\times 3.07$ \\
-\bottomrule
-\end{tabular}
-\caption{Backtest on 2026-05-10 ($22/24$ h available). Validation
-pinball is on the last 8 weeks of the training window prior to
-re-fitting on the full set.}
-\label{tab:backtest}
-\end{table}
-
-\paragraph{Discussion.}
-\DELU\ generalises cleanly: the validation-to-test pinball gap is a
-modest $\times 1.26$, and PI coverage of $90.9\%$ is within reach of
-the nominal $95\%$ given a small held-out sample. The intervals
-correctly contain negative midday prices triggered by PV surplus.
-
-\ES\ exhibits a systematic overnight failure on this Sunday: hourly
-predictions of $54$--$73$ EUR/MWh against realised values of
-$14$--$20$ EUR/MWh from 02:00--08:00 CEST. The
-$+27$ EUR/MWh bias and $63.6\%$ coverage on Spain are driven
-almost entirely by these overnight hours. Inspection shows two
-contributing factors:
-\begin{enumerate}
-  \item \textbf{Lag-feature dominance.} The 24-h price lag references
-        Saturday's overnight ES prices, which were structurally higher;
-        the model up-weights this signal over the (weaker) day-of-week
-        cyclical encoding.
-  \item \textbf{Solar-only widening.} The post-processing in
-        Eq.~(11) widens intervals only where $I_t > 150$, which is
-        zero overnight. The model thus reports tight bands around a
-        biased centre.
-\end{enumerate}
-
 \section{Limitations and future work}
 
 \paragraph{Day-of-week recalibration.}
 The pinball asymmetry interacts poorly with weekend/holiday regime
-shifts. A targeted recalibration --- e.g.\ a Sunday-specific bias
+shifts. A targeted recalibration --- e.g.\ a day-of-week bias
 correction
-$\hat{q}^{\prime}_{p}(t) = \hat{q}_p(t) - b^{z}_{\text{Sun}}$ where
-$b^{z}_{\text{Sun}}$ is the median test residual on prior Sundays ---
-would directly attack the observed ES failure mode.
+$\hat{q}^{\prime}_{p}(t) = \hat{q}_p(t) - b^{z}_{d(t)}$ where
+$b^{z}_{d(t)}$ is the median residual on matching weekday/weekend
+samples --- would improve calibration across regimes.
 
 \paragraph{Coverage-driven widening.}
 Replacing the manual solar widening with an isotonic/conformal
