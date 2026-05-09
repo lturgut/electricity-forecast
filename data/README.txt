@@ -1,5 +1,4 @@
 Electricity Price Forecasting — Training Data
-Team: larat · ETH Zurich
 ==============================================
 
 All data is publicly available, freely downloadable, and licensed for
@@ -90,6 +89,6 @@ decomposition of historical prices — no weather forecast is used.
 REPRODUCTION
 ------------
 
-Run all data-fetch cells in larat_model.ipynb. If these CSV files are
+Run all data-fetch cells in model.ipynb. If these CSV files are
 already present in ./data/, the notebook skips re-downloading and loads
 from cache. This ensures fully reproducible runs.
